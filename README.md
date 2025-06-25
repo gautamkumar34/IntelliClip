@@ -33,7 +33,6 @@ To run IntelliClip, you'll need:
 3. **Get Your AI Key (IMPORTANT!):**
     - Go to [Google AI Studio](https://aistudio.google.com/).
     - Follow their steps to get a **Gemini API Key**.
-    - In your project folder, create a new file named `.env` (just `.env`, no name before the dot!).
     - Inside the `.env` file, put your key like this:
         
         ```
