@@ -56,7 +56,7 @@ To run IntelliClip, you'll need:
 - **Start in Development:**
     
     ```
-    npm run transpile:electron
+    npm run dev
     ```
     
     This runs the app on your computer for testing.
