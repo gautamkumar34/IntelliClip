@@ -14,14 +14,6 @@ IntelliClip is a desktop app that helps you manage the content you choose to sav
 - **Looks Good:** A clean, dark design that's easy on the eyes.
 - **Edit & Reuse:** Change your saved snippets or copy them back to your clipboard.
 
-## See It In Action!
-
-*(Put your app screenshots here!)*
-
-- **Main Screen:** Show what it looks like when you open it.
-- **A Saved Item:** Show a snippet with its language, tags, and summary.
-- **Talking to AI:** Show the panel where you ask questions and get answers.
-
 ## What You Need
 
 To run IntelliClip, you'll need:
