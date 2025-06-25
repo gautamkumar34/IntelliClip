@@ -1,0 +1,14 @@
+{
+    "compilerOptions": {
+        "strict": true,
+        "target": "esnext",
+        "module": "commonjs", // Compile preload as CommonJS
+        "outDir": "../../dist-electron", 
+        "skipLibCheck": true,
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": true
+    },
+    "files": [
+        "preload.ts" 
+    ]
+}
