@@ -11,6 +11,7 @@ dotenv.config({ path: path.join(app.getAppPath(), '.env') });
 app.disableHardwareAcceleration(); 
 
 // Importing specific language modules for the main process
+import plaintext from 'highlight.js/lib/languages/plaintext';
 import javascript from 'highlight.js/lib/languages/javascript';
 import python from 'highlight.js/lib/languages/python';
 import typescript from 'highlight.js/lib/languages/typescript';
@@ -29,11 +30,14 @@ import sql from 'highlight.js/lib/languages/sql';
 
 // Register the languages with highlight.js core for the main process
 if (!hljs.listLanguages().length) { 
+    hljs.registerLanguage('plaintext', plaintext);
     hljs.registerLanguage('javascript', javascript);
+    hljs.registerLanguage('python', python);
     hljs.registerLanguage('typescript', typescript);
     hljs.registerLanguage('json', json);
     hljs.registerLanguage('css', css);
     hljs.registerLanguage('html', xml); 
+    hljs.registerLanguage('bash', bash);
     hljs.registerLanguage('java', java);
     hljs.registerLanguage('cpp', cpp);
     hljs.registerLanguage('csharp', csharp);
@@ -41,6 +45,7 @@ if (!hljs.listLanguages().length) {
     hljs.registerLanguage('ruby', ruby);
     hljs.registerLanguage('go', go);
     hljs.registerLanguage('rust', rust);
+    hljs.registerLanguage('sql', sql);
 
 }
 
@@ -82,6 +87,9 @@ const __dirname = dirname(__filename);
 import { saveSnippet, getAllSnippets, deleteSnippet ,updateSnippet, updateSnippetTags,updateSnippetLanguage, updateSnippetSummary} from './core/storage.js';
 
 let mainWindow: BrowserWindow | null = null;
+let isMainWindowReady = false; 
+let isToggleShortcutActive = false; 
+const TOGGLE_DEBOUNCE_MS = 250;
 
 const REACT_PROD_BUILD_PATH = path.join(app.getAppPath(), 'dist-react', 'index.html');
 console.log('React production build path for loadFile:', REACT_PROD_BUILD_PATH);
@@ -109,16 +117,57 @@ function createWindow() {
     mainWindow.once('ready-to-show', () => {
         if (mainWindow) {
             mainWindow.show();
+            // Once the window is ready and shown, we can mark it as such
+            // This flag is primarily used for the intelligent toggle behavior
+            isMainWindowReady = true; 
         }
     });
 
     mainWindow.on('closed', () => {
         mainWindow = null;
+        isMainWindowReady = false; // Reset flag when window is closed
     });
 }
 
 app.whenReady().then(() => {
     createWindow();
+
+    const toggleAppShortcut = 'Shift+Command+V'; 
+    const toggleRegistered = globalShortcut.register(toggleAppShortcut, () => {
+        if (isToggleShortcutActive) {
+            console.log('Toggle shortcut is active, ignoring rapid press.');
+            return;
+        }
+
+        if (mainWindow) { 
+            isToggleShortcutActive = true; 
+            setTimeout(() => {
+                isToggleShortcutActive = false;
+            }, TOGGLE_DEBOUNCE_MS);
+
+            if (isMainWindowReady) { 
+                console.log('Showing mainWindow and focusing via shortcut.');
+                mainWindow.show();
+                mainWindow.focus(); 
+            }
+            else {
+                console.log('Window exists but not ready to be shown via shortcut, forcing show.');
+                mainWindow.show();
+                mainWindow.focus();
+                isMainWindowReady = true; 
+            }
+        } else {
+            
+            console.log('mainWindow is null on shortcut press, recreating window.');
+            createWindow();
+        }
+    }) as unknown as boolean; // <-- Two-step type assertion added here
+
+    if (!toggleRegistered) { 
+        console.error(`Failed to register global shortcut "${toggleAppShortcut}". It might be taken by another application.`);
+    } else {
+        console.log(`Global shortcut "${toggleAppShortcut}" registered to toggle app visibility.`);
+    }
 
     globalShortcut.register('Shift+Command+C', async () => { 
         const content = clipboard.readText();
@@ -264,6 +313,10 @@ app.whenReady().then(() => {
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
+        } else if (mainWindow && !mainWindow.isVisible()) {
+            mainWindow.show();
+            mainWindow.focus();
+            isMainWindowReady = true; 
         }
     });
 });
