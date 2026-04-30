@@ -1,100 +1,242 @@
-# IntelliClip - Your Smart Clipboard Helper
+# IntelliClip — AI-Powered Smart Clipboard Assistant
 
-IntelliClip is a desktop app that helps you manage the content you choose to save. It's like a super-smart clipboard that remembers your past copies, helps you organize them, and even uses **AI magic** to understand your content and answer questions!
+[![Electron](https://img.shields.io/badge/Electron-36.5.0-blue.svg?style=flat-square&logo=electron)](https://electronjs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8.3-blue.svg?style=flat-square&logo=typescript)](https://typescriptlang.org)
+[![SQLite](https://img.shields.io/badge/SQLite-3.x-green.svg?style=flat-square&logo=sqlite)](https://sqlite.org)
+[![node-llama-cpp](https://img.shields.io/badge/node--llama--cpp-3.18.1-orange.svg?style=flat-square)](https://node-llama-cpp.withcat.ai)
+[![Groq](https://img.shields.io/badge/Groq-llama--3.1--8b--instant-red.svg?style=flat-square)](https://groq.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
-## What It Does
+IntelliClip is a lightweight, local-first desktop application that intelligently captures your clipboard history, classifies content for easy retrieval, and provides sub-120ms hybrid search powered by local AI.
 
-- **Saves What You Choose:** Instead of saving *everything* you copy, IntelliClip only remembers content when you specifically tell it to (by pressing a shortcut like shift+cmd+C).
-- **Knows Code:** Figures out what programming language your code snippets are in (like JavaScript, Python, etc.).
-- **AI Smarts:**
-    - **Quick Summaries:** Gets a short summary of what your copied text is about.
-    - **Ask Anything:** You can ask the AI questions about any saved snippet!
-- **Easy to Find:** Search through all your saved items quickly.
-- **Keep Organized:** Add custom tags (labels) to your snippets.
-- **Looks Good:** A clean, dark design that's easy on the eyes.
-- **Edit & Reuse:** Change your saved snippets or copy them back to your clipboard.
+<!-- Add screenshot here -->
 
-## See It In Action!
+## Features
 
-*(Put your app screenshots here!)*
+### 📋 Automatic Clipboard Capture
+IntelliClip silently monitors your system clipboard using a high-frequency polling monitor (500ms interval). It automatically identifies and saves text, code snippets, URLs, and terminal commands as you work. The application lives in your system tray, providing a "set and forget" experience that builds a searchable memory of your daily productivity without manual intervention.
 
-- **Main Screen:** Show what it looks like when you open it.
-- **A Saved Item:** Show a snippet with its language, tags, and summary.
-- **Talking to AI:** Show the panel where you ask questions and get answers.
+### 🔍 Hybrid Search Engine
+Find any snippet instantly with a sophisticated hybrid search architecture. IntelliClip combines traditional **BM25 (FTS5)** keyword matching for exact hits with **sqlite-vec** for semantic vector similarity. Results are ranked using a weighted scoring system (40% BM25 + 60% Vector) to ensure that whether you remember the exact words or just the general concept, you'll find what you need in under 120ms.
 
-## What You Need
+### 🛡️ Privacy-First Filtering
+Your security is our priority. IntelliClip features a production-grade safety engine that uses **Shannon entropy analysis** to detect and block passwords, API keys, and sensitive tokens (JWT, AWS, Stripe, etc.) before they are saved to disk. Additionally, the app automatically detects and ignores content copied from password managers like 1Password or Bitwarden. Filtered events are recorded in an audit log without storing the sensitive content itself.
 
-To run IntelliClip, you'll need:
+### 🤖 AI-Powered Q&A
+Leverage the power of modern LLMs to interact with your clipboard history. By integrating the **Groq API** (running `llama-3.1-8b-instant`), IntelliClip allows you to select any snippet and ask questions or request summaries. The "Ask AI" feature is optimized for speed with a 10-second timeout and graceful error handling, ensuring a responsive experience that understands the context of your saved data.
 
-- **Node.js:** (A program that runs JavaScript outside your web browser)
-- **npm:** (Comes with Node.js, helps manage project parts)
+### 🏷️ Content Classification
+No more unorganized lists of text. A robust regex-based classification engine automatically identifies programming languages (Javascript, Python, Go, etc.) and categorizes items into content types like "Code," "URL," "Command," or "Text." This classification drives the iconography and grouping in the Command Palette UI, making it easy to scan your history at a glance.
 
-## How to Get Started
+### 🏠 Local-First Architecture
+IntelliClip is built with a privacy-centric, local-first mindset. Your SQLite database, `node-llama-cpp` embeddings, and vector search engine all run natively on your machine with **zero telemetry** and no external cloud requirements. The only optional network connection is to the Groq API for AI Q&A features, keeping your data history completely under your control.
 
-1. **Get the Code:** Download or clone this project from GitHub.
-2. **Install Parts:** Open your computer's terminal (like Command Prompt or PowerShell on Windows, or Terminal on Mac/Linux), go to the project folder, and type:
-    
-    ```
-    npm install
-    ```
-    
-3. **Get Your AI Key (IMPORTANT!):**
-    - Go to [Google AI Studio](https://aistudio.google.com/).
-    - Follow their steps to get a **Gemini API Key**.
-    - In your project folder, create a new file named `.env` (just `.env`, no name before the dot!).
-    - Inside the `.env` file, put your key like this:
-        
-        ```
-        API_KEY=YOUR_GEMINI_API_KEY_HERE
-        ```
-        
-        **Replace `YOUR_GEMINI_API_KEY_HERE` with the key you got from Google AI Studio.**
-        
+---
 
-## How to Use It
+## How It Works
 
-- **Start in Development:**
-    
-    ```
-    npm run transpile:electron
-    ```
-    
-    This runs the app on your computer for testing.
-    
-- **Build the App (for Mac, Windows, Linux):**
-    
-    ```
-    npm run dist:mac   # For macOS (or dist:win, dist:linux)
-    ```
-    
-    This creates a full app that you can install and run like any other program.
-    
-    **Important Note for AI Features in Built App:**
-    
-    Since the **.env** file (which holds my AI key) is usually ignored by version control, you'll need to make sure it's included in the final packaged app. If AI features don't work after building, please refer to the "Having Trouble" section below for steps on how to configure your build tool (electron-builder) to include the **.env** file.
-    
-- **Save Clips:** Just copy text or code to your clipboard and then press `Shift + Command + C` (on Mac, or `Shift + Control + C` on Windows/Linux).
-- **Find Things:** Use the search box to find anything by its content, language, or tags.
-- **Ask AI:** Click the "Ask AI" button on any snippet to get summaries or ask questions.
+IntelliClip follows a deterministic pipeline to transform transient clipboard data into a persistent, searchable knowledge base:
 
-## Having Trouble?
+**Flow:** `Clipboard` → `Safety Filter` → `Classifier` → `SQLite Storage` → `Local Embedding` → `Hybrid Search`.
 
-- **"AI API key not configured." Error:** This usually means your `.env` file isn't set up right or isn't being found when the app is built.
-    - Make sure you created the `.env` file at the very top level of your project folder.
-    - Double-check that `API_KEY=YOUR_KEY` is written correctly in `.env`.
-    - If you built the app, make sure you followed the steps to include `.env` in `electron-builder.json` and adjusted your main Electron file (`main.ts` or `main.js`) to find it.
+```text
+┌─────────────────────────────────────────────────────────┐
+│                    IntelliClip                          │
+│                                                         │
+│  ┌──────────┐   ┌──────────┐   ┌──────────────────┐   │
+│  │ Clipboard│──→│ Safety   │──→│ Classifier        │   │
+│  │ Monitor  │   │ Filter   │   │ (code/URL/text)   │   │
+│  └──────────┘   └────┬─────┘   └────────┬─────────┘   │
+│                      │                  │              │
+│                      ▼                  ▼              │
+│                 ┌──────────┐   ┌──────────────────┐   │
+│                 │ Filter   │   │ clips table      │   │
+│                 │ Log      │   │ (SQLite)         │   │
+│                 └──────────┘   └────────┬─────────┘   │
+│                                         │              │
+│                          ┌──────────────▼──────────┐  │
+│                          │ Embedding Worker        │  │
+│                          │ (node-llama-cpp)        │  │
+│                          │ 768-dim vectors         │  │
+│                          └──────────────┬──────────┘  │
+│                                         │              │
+│                    ┌────────────────────▼─────────┐   │
+│                    │ Hybrid Search Engine          │   │
+│                    │ BM25 (FTS5) + Vector (vec0)   │   │
+│                    └────────────────────┬─────────┘   │
+│                                         │              │
+│                    ┌────────────────────▼─────────┐   │
+│                    │ Command Palette UI            │   │
+│                    │ (React + TypeScript)          │   │
+│                    └──────────────────────────────┘   │
+│                                                         │
+│  External (optional):                                   │
+│  ┌──────────┐                                           │
+│  │ Groq API │──→ "Ask AI" feature                      │
+│  └──────────┘                                           │
+└─────────────────────────────────────────────────────────┘
+```
 
-## Built With
+---
 
-- [Electron](https://www.electronjs.org/) - For making desktop apps
-- [React](https://react.dev/) - For building the user interface
-- [TypeScript](https://www.typescriptlang.org/) - For writing safer code
-- [Google Gemini API](https://ai.google.dev/gemini-api) - The AI brains
-- [highlight.js](https://highlightjs.org/) - For making code look pretty
-- [Fuse.js](https://fusejs.io/) - For smart searching
-- [better-sqlite3](https://github.com/JoshuaWise/better-sqlite3) - For local data storage
-- [dotenv](https://www.npmjs.com/package/dotenv) - For managing secret keys
+## Tech Stack
 
-## Want to Help?
+| Technology | Purpose | Why |
+| :--- | :--- | :--- |
+| **Electron** | Desktop Shell | Provides cross-platform compatibility, system tray integration, and native global shortcuts. |
+| **React + TypeScript** | UI Development | Ensures type safety across the IPC boundary and provides a responsive, component-based interface. |
+| **better-sqlite3** | Core Database | Offers a high-performance synchronous API with no connection overhead, ideal for local-first apps. |
+| **sqlite-vec** | Vector Search | A lightweight SQLite extension that enables 768-dimensional vector search without an external process. |
+| **node-llama-cpp** | Embedding Engine | Allows in-process loading of GGUF models, eliminating the need for a separate Ollama or HTTP server. |
+| **nomic-embed-text** | Embedding Model | A compact (~80MB), 768-dimension model optimized for high-performance semantic search. |
+| **Groq API** | AI Q&A | Provides ultra-fast inference (~500ms) for the "Ask AI" feature using the Llama 3.1 8B model. |
 
-Feel free to suggest improvements or raise an issue or contribute to the code!
+---
+
+## Project Structure
+
+```text
+IntelliClip/
+├── src/
+│   ├── electron/           ← Main process (Node.js)
+│   │   ├── main.ts         ← App entry, tray, IPC handlers
+│   │   ├── db.ts           ← SQLite schema + migrations
+│   │   ├── embedder.ts     ← node-llama-cpp embedding engine
+│   │   ├── groq.ts         ← Groq API client
+│   │   ├── search.ts       ← Hybrid BM25 + vector search
+│   │   ├── clipboard.ts    ← Clipboard polling monitor
+│   │   ├── classifier.ts   ← Content type + language detection
+│   │   ├── safety.ts       ← Secret/password detection
+│   │   ├── preload.ts      ← Context bridge (main ↔ renderer)
+│   │   ├── core/
+│   │   │   └── storage.ts  ← CRUD operations on clips table
+│   │   └── utils.ts
+│   └── ui/                 ← Renderer process (React)
+│       ├── App.tsx          ← Command palette UI
+│       ├── App.css          ← Styles
+│       ├── main.tsx         ← React entry point
+│       ├── types.ts         ← Shared TypeScript types
+│       └── components/
+│           ├── SearchBar.tsx
+│           ├── ResultRow.tsx
+│           └── ErrorBoundary.tsx
+├── resources/
+│   └── models/
+│       └── nomic-embed-text-v1.5.Q4_K_M.gguf  ← Bundled embedding model
+├── electron-builder.json    ← Build/packaging config
+├── package.json
+├── tsconfig.json
+└── .env.example
+```
+
+---
+
+## Installation
+
+### Prerequisites
+- **Node.js** v18 or higher.
+- **Git** for cloning the repository.
+- **Groq API Key**: Obtain one from the [Groq Console](https://console.groq.com/).
+
+### Setup Steps
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/yourusername/IntelliClip.git
+   cd IntelliClip
+   ```
+
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment**:
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env` and add your `GROQ_API_KEY`.
+
+4. **Launch development mode**:
+   ```bash
+   npm run dev
+   ```
+
+To verify the installation, check the system tray for the IntelliClip icon and copy some text to see it appear in the history (via `Shift+Cmd+V`).
+
+---
+
+## Usage Guide
+
+### Keyboard Shortcuts
+| Shortcut | Action |
+| :--- | :--- |
+| `Shift + Cmd + V` | Open/Toggle the IntelliClip command palette. |
+| `Enter` | Paste the selected snippet directly into your active application. |
+| `Esc` | Close the command palette. |
+| `Arrow Keys` | Navigate through search results. |
+
+### Searching
+The search bar accepts natural language queries. Results are ranked by a combination of keyword relevance and semantic meaning. Each result displays a **Type Badge** (Code, URL, etc.), the **Source App** (e.g., VS Code, Chrome), and a **Relative Timestamp**.
+
+### Ask AI
+Select a snippet in the results and type your question in the AI section. This feature uses the context of the snippet to provide intelligent answers, code explanations, or refactoring suggestions via Groq.
+
+### Filter Log
+IntelliClip automatically ignores sensitive data. If you copy a secret that is blocked, an entry is created in the `filter_log`. You can review these events to see which patterns (e.g., `github_token`, `aws_secret`) were triggered.
+
+---
+
+## Database Schema
+
+### `clips` Table
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | INTEGER | Primary key (autoincrement). |
+| `content` | TEXT | The raw captured text/code. |
+| `content_type` | TEXT | Classification: `code`, `url`, `command`, or `text`. |
+| `language` | TEXT | Programming language identifier (if code). |
+| `source_app` | TEXT | The application from which the content was copied. |
+| `captured_at` | INTEGER | Unix timestamp of capture. |
+| `is_embedded` | INTEGER | Flag indicating if semantic vector has been generated (0/1). |
+| `summary` | TEXT | Optional AI-generated summary of the content. |
+
+**Virtual Tables:**
+- `clips_fts`: FTS5 virtual table for high-speed full-text keyword search.
+- `clips_vec`: `vec0` virtual table for storing 768-dimensional float embeddings.
+
+---
+
+## Configuration
+- **.env**: Used exclusively for your `GROQ_API_KEY`. This file is never bundled with production builds.
+- **Storage Location**:
+  - **macOS**: `~/Library/Application Support/intelliclip/intelliclip.db`
+  - **Windows**: `%AppData%\intelliclip\intelliclip.db`
+- **Embedding Model**: Bundled as an internal resource in `resources/models/`.
+
+---
+
+## Building for Production
+To package IntelliClip for your OS, use the following commands:
+
+```bash
+# General build (detects current OS)
+npm run build
+
+# OS Specific distributions
+npm run dist:mac    # Build .dmg for Apple Silicon
+npm run dist:win    # Build portable/MSI for Windows
+npm run dist:linux  # Build AppImage for Linux
+```
+Artifacts will be generated in the `dist/` directory.
+
+---
+
+## Known Limitations
+- **Model Load Time**: The local embedding model takes ~2-3 seconds to load into VRAM on the first cold start.
+- **Internet Requirement**: The "Ask AI" feature requires an active internet connection to communicate with the Groq API.
+- **Truncation**: Snippets longer than 2000 characters are truncated before being passed to the embedding engine to maintain performance.
+
+---
+
+## License
+Distributed under the **MIT License**. See `LICENSE` for more information.

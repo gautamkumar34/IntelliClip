@@ -1,6 +1,6 @@
 {
     "appId": "com.Dev-help.Intelligent-Clipboard",
-    "files": ["dist-electron","dist-react",".env"],
+    "files": ["dist-electron","dist-react"],
     "icon":"./desktopIcon.png",
     "mac":{
         "target":"dmg"
@@ -11,5 +11,15 @@
     },
     "win":{
         "target":["portable","msi"]
-    }
+    },
+    "extraResources": [
+        {
+            "from": "resources/models",
+            "to": "models",
+            "filter": ["*.gguf"]
+        }
+    ],
+    "asarUnpack": [
+        "node_modules/node-llama-cpp/**"
+    ]
 }

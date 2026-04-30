@@ -1,115 +1,118 @@
 // src/electron/main.ts
-import { app, BrowserWindow, globalShortcut, clipboard, ipcMain } from 'electron';
+import { app, BrowserWindow, globalShortcut, clipboard, ipcMain, screen } from 'electron';
+import { Tray, nativeImage, Menu } from 'electron';
+import { execSync } from 'child_process';
 import path from 'path';
-import { isDev } from './utils.js';
-import hljs from 'highlight.js/lib/core';
-import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from '@google/generative-ai';
-import dotenv from 'dotenv'; 
-
-dotenv.config({ path: path.join(app.getAppPath(), '.env') }); 
-
-app.disableHardwareAcceleration(); 
-
-// Importing specific language modules for the main process
-import plaintext from 'highlight.js/lib/languages/plaintext';
-import javascript from 'highlight.js/lib/languages/javascript';
-import python from 'highlight.js/lib/languages/python';
-import typescript from 'highlight.js/lib/languages/typescript';
-import json from 'highlight.js/lib/languages/json';
-import css from 'highlight.js/lib/languages/css';
-import xml from 'highlight.js/lib/languages/xml'; 
-import bash from 'highlight.js/lib/languages/bash';
-import java from 'highlight.js/lib/languages/java';
-import cpp from 'highlight.js/lib/languages/cpp';
-import csharp from 'highlight.js/lib/languages/csharp';
-import php from 'highlight.js/lib/languages/php';
-import ruby from 'highlight.js/lib/languages/ruby';
-import go from 'highlight.js/lib/languages/go';
-import rust from 'highlight.js/lib/languages/rust';
-import sql from 'highlight.js/lib/languages/sql';
-
-// Register the languages with highlight.js core for the main process
-if (!hljs.listLanguages().length) { 
-    hljs.registerLanguage('plaintext', plaintext);
-    hljs.registerLanguage('javascript', javascript);
-    hljs.registerLanguage('python', python);
-    hljs.registerLanguage('typescript', typescript);
-    hljs.registerLanguage('json', json);
-    hljs.registerLanguage('css', css);
-    hljs.registerLanguage('html', xml); 
-    hljs.registerLanguage('bash', bash);
-    hljs.registerLanguage('java', java);
-    hljs.registerLanguage('cpp', cpp);
-    hljs.registerLanguage('csharp', csharp);
-    hljs.registerLanguage('php', php);
-    hljs.registerLanguage('ruby', ruby);
-    hljs.registerLanguage('go', go);
-    hljs.registerLanguage('rust', rust);
-    hljs.registerLanguage('sql', sql);
-
-}
-
-const geminiApiKey = process.env.GEMINI_API_KEY;
-
-if (!geminiApiKey) {
-    console.error('GEMINI_API_KEY is not set in the .env file!');
-}
-const genAI = new GoogleGenerativeAI(geminiApiKey || '');
-const safetySettings = [
-    {
-        category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-        threshold: HarmBlockThreshold.BLOCK_NONE, 
-    },
-    {
-        category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        threshold: HarmBlockThreshold.BLOCK_NONE,
-    },
-    {
-        category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        threshold: HarmBlockThreshold.BLOCK_NONE,
-    },
-    {
-        category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        threshold: HarmBlockThreshold.BLOCK_NONE,
-    },
-];
-
-const geminiModel = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash',
-    safetySettings: safetySettings 
-});
-
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+
+import { isDev } from './utils.js';
+import { initDB, closeDB, getDB } from './db.js';
+import { startEmbeddingWorker, stopEmbeddingWorker, getEmbedderStatus } from './embedder.js';
+import { callGroq, checkGroqHealth } from './groq.js';
+import { hybridSearch } from './search.js';
+import { ClipboardMonitor } from './clipboard.js';
+import { deleteSnippet, updateSnippet, updateSnippetTags, updateSnippetLanguage } from './core/storage.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-import { saveSnippet, getAllSnippets, deleteSnippet ,updateSnippet, updateSnippetTags,updateSnippetLanguage, updateSnippetSummary} from './core/storage.js';
+app.disableHardwareAcceleration();
+
+// ─── State ──────────────────────────────────────────────────────────────────────
 
 let mainWindow: BrowserWindow | null = null;
-let isMainWindowReady = false; 
-let isToggleShortcutActive = false; 
+let clipboardMonitor: ClipboardMonitor | null = null;
+let tray: Tray | null = null;
+let isMainWindowReady = false;
+let isToggleShortcutActive = false;
 const TOGGLE_DEBOUNCE_MS = 250;
 
-const REACT_PROD_BUILD_PATH = path.join(app.getAppPath(), 'dist-react', 'index.html');
-console.log('React production build path for loadFile:', REACT_PROD_BUILD_PATH);
+// Provider health state
+let llmHealthy = false;
 
+const REACT_PROD_BUILD_PATH = path.join(app.getAppPath(), 'dist-react', 'index.html');
+
+// ─── Tray ───────────────────────────────────────────────────────────────────────
+
+function updateTrayCount() {
+    if (!tray) return;
+    try {
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const startSec = Math.floor(startOfDay.getTime() / 1000);
+        const res = getDB().prepare('SELECT COUNT(*) as count FROM clips WHERE captured_at >= ?').get(startSec) as any;
+        const count = res?.count || 0;
+
+
+        const embedStatus = getEmbedderStatus();
+        tray.setTitle(`${count} today`);
+        tray.setToolTip(`IntelliClip — ${count} clips today\nEmbedder: ${embedStatus}  ·  Groq: ${llmHealthy ? 'Configured' : 'Unconfigured'}`);
+    } catch {}
+}
+
+async function refreshHealth() {
+    llmHealthy = await checkGroqHealth();
+    updateTrayCount();
+}
+
+// ─── Previous App Focus Tracking (macOS) ────────────────────────────────────────
+
+let previousApp: string | null = null;
+
+function trackPreviousApp() {
+    if (process.platform !== 'darwin') return;
+    try {
+        previousApp = execSync(
+            'osascript -e \'tell application "System Events" to get name of first application process whose frontmost is true\'',
+            { timeout: 500, encoding: 'utf-8' }
+        ).trim();
+    } catch {
+        previousApp = null;
+    }
+}
+
+function restorePreviousApp() {
+    if (!previousApp || process.platform !== 'darwin') return;
+    try {
+        execSync(
+            `osascript -e 'tell application "${previousApp}" to activate'`,
+            { timeout: 1000 }
+        );
+    } catch {}
+}
+
+// ─── Window ─────────────────────────────────────────────────────────────────────
 
 function createWindow() {
+    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    const winW = 680;
+    const winH = 520;
+
     mainWindow = new BrowserWindow({
-        width: 800,
-        height: 600,
+        width: winW,
+        height: winH,
+        x: Math.round((screenW - winW) / 2),
+        y: Math.round(screenH * 0.2),
         show: false,
+        frame: false,
+        transparent: true,
+        alwaysOnTop: true,
+        type: 'panel',
+        skipTaskbar: true,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js')
+            preload: path.join(__dirname, 'preload.js'),
         },
+    });
+
+    mainWindow.on('blur', () => {
+        if (mainWindow) mainWindow.hide();
     });
 
     if (isDev()) {
         mainWindow.loadURL('http://localhost:5123');
-        mainWindow.webContents.openDevTools();
     } else {
         mainWindow.loadFile(REACT_PROD_BUILD_PATH);
     }
@@ -117,219 +120,245 @@ function createWindow() {
     mainWindow.once('ready-to-show', () => {
         if (mainWindow) {
             mainWindow.show();
-            // Once the window is ready and shown, we can mark it as such
-            // This flag is primarily used for the intelligent toggle behavior
-            isMainWindowReady = true; 
+            isMainWindowReady = true;
         }
     });
 
     mainWindow.on('closed', () => {
         mainWindow = null;
-        isMainWindowReady = false; // Reset flag when window is closed
+        isMainWindowReady = false;
     });
 }
 
-app.whenReady().then(() => {
+// ─── App Ready ──────────────────────────────────────────────────────────────────
+
+app.whenReady().then(async () => {
+    initDB();
+    
+    // Initialize node-llama-cpp embedder and start worker
+    startEmbeddingWorker().then(() => {
+        updateTrayCount();
+    });
+
+    // Initial health check
+    await refreshHealth();
+
+    // Periodic health check every 30s
+    setInterval(refreshHealth, 30000);
+
+    // ── Tray Setup ──────────────────────────────────────────────────────────
+    const icon = nativeImage.createEmpty();
+    tray = new Tray(icon);
+    updateTrayCount();
+
+    const buildTrayMenu = () => Menu.buildFromTemplate([
+        { label: 'Show/Hide', click: () => {
+            if (mainWindow?.isVisible()) mainWindow.hide();
+            else { mainWindow?.show(); mainWindow?.focus(); }
+        }},
+        { type: 'separator' },
+        { type: 'separator' },
+        { label: clipboardMonitor?.isPaused() ? '▶ Resume Capture' : '⏸ Pause Capture', click: () => {
+            if (clipboardMonitor?.isPaused()) {
+                clipboardMonitor.resume();
+            } else {
+                clipboardMonitor?.pause();
+            }
+            tray?.setContextMenu(buildTrayMenu());
+        }},
+        { type: 'separator' },
+        { label: 'Quit IntelliClip', click: () => app.quit() },
+    ]);
+
+    tray.setContextMenu(buildTrayMenu());
+
+    // Refresh tray menu on health changes
+    const originalRefresh = refreshHealth;
+    // (health dots update via updateTrayCount tooltip)
+
+    // ── Window ──────────────────────────────────────────────────────────────
     createWindow();
 
-    const toggleAppShortcut = 'Shift+Command+V'; 
-    const toggleRegistered = globalShortcut.register(toggleAppShortcut, () => {
-        if (isToggleShortcutActive) {
-            console.log('Toggle shortcut is active, ignoring rapid press.');
-            return;
+    // ── Clipboard Monitor ───────────────────────────────────────────────────
+    const win = BrowserWindow.getAllWindows()[0];
+    clipboardMonitor = new ClipboardMonitor((id) => {
+        updateTrayCount();
+        tray?.setContextMenu(buildTrayMenu()); // Update count in menu
+        if (win && !win.isDestroyed()) {
+            win.webContents.send('snippet-saved', id);
         }
+    });
+    clipboardMonitor.start();
 
-        if (mainWindow) { 
-            isToggleShortcutActive = true; 
-            setTimeout(() => {
-                isToggleShortcutActive = false;
-            }, TOGGLE_DEBOUNCE_MS);
+    // ── Global Shortcut ─────────────────────────────────────────────────────
+    const toggleAppShortcut = 'Shift+Command+V';
+    const toggleRegistered = globalShortcut.register(toggleAppShortcut, () => {
+        if (isToggleShortcutActive) return;
 
-            if (isMainWindowReady) { 
-                console.log('Showing mainWindow and focusing via shortcut.');
-                mainWindow.show();
-                mainWindow.focus(); 
-            }
-            else {
-                console.log('Window exists but not ready to be shown via shortcut, forcing show.');
+        isToggleShortcutActive = true;
+        setTimeout(() => { isToggleShortcutActive = false; }, TOGGLE_DEBOUNCE_MS);
+
+        if (mainWindow) {
+            if (mainWindow.isVisible()) {
+                mainWindow.hide();
+            } else {
+                trackPreviousApp();
                 mainWindow.show();
                 mainWindow.focus();
-                isMainWindowReady = true; 
+                isMainWindowReady = true;
             }
         } else {
-            
-            console.log('mainWindow is null on shortcut press, recreating window.');
+            trackPreviousApp();
             createWindow();
         }
-    }) as unknown as boolean; // <-- Two-step type assertion added here
+    }) as unknown as boolean;
 
-    if (!toggleRegistered) { 
-        console.error(`Failed to register global shortcut "${toggleAppShortcut}". It might be taken by another application.`);
+    if (!toggleRegistered) {
+        console.error(`Failed to register global shortcut "${toggleAppShortcut}".`);
     } else {
-        console.log(`Global shortcut "${toggleAppShortcut}" registered to toggle app visibility.`);
+        console.log(`Global shortcut "${toggleAppShortcut}" registered.`);
     }
 
-    globalShortcut.register('Shift+Command+C', async () => { 
-        const content = clipboard.readText();
-        if (content.trim().length > 0) {
-            let detectedLanguage: string | null = null;
-            try {
-                const result = hljs.highlightAuto(content);
-                if (result.language) {
-                    detectedLanguage = result.language;
-                    console.log(`Detected language: ${detectedLanguage}`);
-                } else {
-                    console.log('Could not detect specific language for snippet.');
-                }
-            } catch (e) {
-                console.error('Error during language detection:', e);
-            }
+    // ── IPC Handlers ────────────────────────────────────────────────────────
 
-            let snippetId: number | null = null;
-            try {
-                snippetId = await saveSnippet(content, detectedLanguage, null); 
-                console.log(`Saved snippet with ID: ${snippetId}`);
-
-                // Generate AI Summary in the background
-                let generatedSummary: string | null = null;
-                if (geminiApiKey) { 
-                    try {
-                        const summaryPrompt = `Please provide a concise summary of the following content in less than 3-4 lines depending upon the content need. And check if its a code snippet of some standard problems solution from leetcode or cses like problemset or standard data structure(like hashmap , linked list, set...etc) and algorithm(like dp , backtracking , bfs , two pointer ...etc) , if it is important then only mention it , if it hasn't any standard dsa just tell what does it doo. Also add one most relevant tags(#) for easy search of the the snippet . Focus on the main purpose or key points:\n\n${content}`;
-                        console.log('Generating AI summary for snippet...');
-                        const summaryResult = await geminiModel.generateContent(summaryPrompt);
-                        generatedSummary = summaryResult.response.text();
-                        console.log('AI Summary Generated:', generatedSummary);
-
-                        if (snippetId) {
-                            await updateSnippetSummary(snippetId, generatedSummary); 
-                            console.log(`Snippet ID ${snippetId} updated with summary.`);
-                        }
-                    } catch (aiError: any) {
-                        console.error('Error generating AI summary:', aiError);
-                        if (snippetId) {
-                             await updateSnippetSummary(snippetId, `Error generating summary: ${aiError.message || 'Unknown AI error'}`);
-                        }
-                    }
-                } else {
-                    console.warn('GEMINI_API_KEY not set. Skipping AI summarization.');
-                }
-
-                if (mainWindow && !mainWindow.isDestroyed()) {
-                    mainWindow.webContents.send('snippet-saved', snippetId);
-                }
-            } catch (err: any) {
-                console.error('Failed to save snippet or update with summary:', err);
-            }
-        } else {
-            console.log('Clipboard content is empty or only whitespace, not saving.');
-        }
-    });
-    console.log('Global shortcut "Shift+Command+C" registered.');
-
-
-    ipcMain.handle('get-all-snippets', async () => {
-        try {
-            const snippets = await getAllSnippets();
-            return snippets;
-        } catch (error) {
-            console.error('Failed to get snippets from DB:', error);
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
+    ipcMain.handle('get-recent', async (_, limit: number = 30) => {
+        return getDB().prepare(`
+            SELECT id, content_type, language, source_app,
+                   substr(content, 1, 120) as preview, captured_at
+            FROM clips ORDER BY captured_at DESC LIMIT ?
+        `).all(limit);
     });
 
-    ipcMain.handle('delete-snippet', async (_event, id: number) => {
-        try {
-            await deleteSnippet(id);
-            return { success: true };
-        } catch (error) {
-            console.error('Failed to delete snippet from DB:', error);
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
+    ipcMain.handle('search-clips', async (_, query: string, contentType?: string) => {
+        return hybridSearch(query, contentType);
     });
 
-    ipcMain.handle('copy-to-clipboard', async (_event, content: string) => {
+    ipcMain.handle('get-clip-full', async (_, id: number) => {
+        return getDB().prepare('SELECT * FROM clips WHERE id = ?').get(id);
+    });
+
+    ipcMain.handle('get-filter-stats', async () => {
+        return getDB().prepare(`
+            SELECT reason, COUNT(*) as count
+            FROM filter_log
+            WHERE created_at > unixepoch() - 604800
+            GROUP BY reason
+        `).all();
+    });
+
+    ipcMain.handle('get-embedder-status', async () => {
+        return { status: getEmbedderStatus() };
+    });
+
+    ipcMain.handle('get-groq-status', async () => {
+        return { groq: llmHealthy };
+    });
+
+    ipcMain.handle('paste-to-last-app', async (_, content: string) => {
         try {
             clipboard.writeText(content);
-            console.log('Content copied to clipboard.');
-            return { success: true };
-        } catch (error) {
-            console.error('Failed to copy to clipboard:', error);
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
-    });
-
-    ipcMain.handle('update-snippet', async (_event, id: number, newContent: string) => {
-        try {
-            await updateSnippet(id, newContent);
-            return { success: true };
-        } catch (error) {
-            console.error('Failed to update snippet in DB:', error);
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
-    });
-
-    ipcMain.handle('update-snippet-tags', async (_event, id: number, newTags: string) => {
-        try {
-            await updateSnippetTags(id, newTags);
-            return { success: true };
-        } catch (error) {
-            console.error('Failed to update snippet tags in DB:', error);
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
-    });
-    ipcMain.handle('update-snippet-language', async (_event, id: number, newLanguage: string | null) => {
-        try {
-            await updateSnippetLanguage(id, newLanguage);
-            return { success: true };
-        } catch (error) {
-            console.error('Failed to update snippet language in DB:', error);
-            return { success: false, error: error instanceof Error ? error.message : String(error) };
-        }
-    });
-
-    ipcMain.handle('generate-ai-response', async (_event, prompt: string) => {
-        if (!geminiApiKey) {
-            return { success: false, error: 'AI API key not configured.' };
-        }
-    
-        try {
-            console.log('Generating AI response for prompt:', prompt);
-            const result = await geminiModel.generateContent(prompt); 
-            const response = result.response;
-            const text = response.text();
-            console.log('AI Response:', text);
-            return { success: true, response: text };
-        } catch (error: any) {
-            console.error('Error generating AI response:', error);
-            if (error.response && error.response.promptFeedback) {
-                console.error('Prompt Feedback:', error.response.promptFeedback);
-                return { success: false, error: `AI prompt feedback: ${JSON.stringify(error.response.promptFeedback)}` };
+            if (mainWindow) mainWindow.hide();
+            // Small delay to let the window hide before switching
+            await new Promise(r => setTimeout(r, 100));
+            restorePreviousApp();
+            // Simulate Cmd+V
+            if (process.platform === 'darwin') {
+                setTimeout(() => {
+                    try {
+                        execSync('osascript -e \'tell application "System Events" to keystroke "v" using command down\'', { timeout: 1000 });
+                    } catch {}
+                }, 200);
             }
-            return { success: false, error: error.message || 'Unknown AI generation error' };
+            return { success: true };
+        } catch (e: any) {
+            return { success: false, error: e.message };
         }
     });
 
+    ipcMain.handle('delete-snippet', async (_, id: number) => {
+        try {
+            deleteSnippet(id);
+            return { success: true };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
+    });
 
+    ipcMain.handle('copy-to-clipboard', async (_, content: string) => {
+        try {
+            clipboard.writeText(content);
+            return { success: true };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
+    });
+
+    ipcMain.handle('update-snippet', async (_, id: number, newContent: string) => {
+        try {
+            updateSnippet(id, newContent);
+            return { success: true };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
+    });
+
+    ipcMain.handle('update-snippet-tags', async (_, id: number, newTags: string) => {
+        try {
+            updateSnippetTags(id, newTags);
+            return { success: true };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
+    });
+
+    ipcMain.handle('update-snippet-language', async (_, id: number, newLanguage: string | null) => {
+        try {
+            updateSnippetLanguage(id, newLanguage);
+            return { success: true };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
+    });
+
+    ipcMain.handle('generate-ai-response', async (_, prompt: string) => {
+        try {
+            const response = await callGroq(prompt);
+            if (response) {
+                return { success: true, response };
+            }
+            return { success: false, error: 'Groq returned empty response or error.' };
+        } catch (e: any) {
+            return { success: false, error: e.message };
+        }
+    });
+
+    // ── Activate ────────────────────────────────────────────────────────────
     app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) {
             createWindow();
         } else if (mainWindow && !mainWindow.isVisible()) {
             mainWindow.show();
             mainWindow.focus();
-            isMainWindowReady = true; 
         }
     });
 });
 
+// ─── Lifecycle ──────────────────────────────────────────────────────────────────
+
 app.on('window-all-closed', () => {
-    globalShortcut.unregisterAll();
-    console.log('All windows closed. Global shortcuts unregistered.');
+    // Keep tray alive — don't quit on macOS
     if (process.platform !== 'darwin') {
         app.quit();
     }
 });
 
+app.on('before-quit', () => {
+    if (clipboardMonitor) clipboardMonitor.stop();
+    stopEmbeddingWorker();
+    closeDB();
+    globalShortcut.unregisterAll();
+});
+
 app.on('will-quit', () => {
     globalShortcut.unregisterAll();
-    console.log('App is quitting. All global shortcuts unregistered.');
 });

@@ -1,82 +1,37 @@
-// src/electron/core/storage.ts
-import Database from 'better-sqlite3';
-import path from 'path';
-import { app } from 'electron';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { getDB } from '../db.js';
 
 export interface Snippet {
     id?: number;
     content: string;
-    timestamp: number;
-    language?: string;
+    captured_at: number;
+    updated_at: number;
+    language?: string | null;
     tags?: string;
-    summary?: string; 
+    summary?: string | null; 
 }
 
-const dbPath = path.join(app.getPath('userData'), 'intelliclipboard.db');
-console.log('Database path:', dbPath);
-
-const db = new Database(dbPath);
-
-function initDb() {
-    try {
-        db.exec(`
-            CREATE TABLE IF NOT EXISTS snippets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                language TEXT,
-                tags TEXT,
-                summary TEXT -- MODIFIED: Added summary column
-            )
-        `);
-        console.log('Snippets table ensured to exist.');
-
-
-        const columnCheck = db.prepare("PRAGMA table_info(snippets);").all() as { name: string; }[];
-        const hasTagsColumn = columnCheck.some(column => column.name === 'tags');
-        const hasLanguageColumn = columnCheck.some(column => column.name === 'language');
-        const hasSummaryColumn = columnCheck.some(column => column.name === 'summary'); 
-
-        if (!hasTagsColumn) {
-            db.exec('ALTER TABLE snippets ADD COLUMN tags TEXT;');
-            console.log('Added "tags" column to "snippets" table.');
-        }
-        if (!hasLanguageColumn) {
-            db.exec('ALTER TABLE snippets ADD COLUMN language TEXT;');
-            console.log('Added "language" column to "snippets" table.');
-        }
-        if (!hasSummaryColumn) { 
-            db.exec('ALTER TABLE snippets ADD COLUMN summary TEXT;');
-            console.log('Added "summary" column to "snippets" table.');
-        }
-
-    } catch (error) {
-        console.error('Error initializing database or performing migration:', error);
-    }
+export function saveSnippet(content: string, language: string | null = null, summary: string | null = null): number {
+    const stmt = getDB().prepare('INSERT INTO clips (content, captured_at, updated_at, language, summary) VALUES (?, unixepoch(), unixepoch(), ?, ?)');
+    const info = stmt.run(content, language, summary); 
+    console.log(`Saved snippet with ID: ${info.lastInsertRowid}, Language: ${language || 'N/A'}, Summary: ${summary ? 'Present' : 'N/A'}`);
+    return Number(info.lastInsertRowid);
 }
 
-initDb();
-
-export async function saveSnippet(content: string, language: string | null = null, summary: string | null = null): Promise<number> {
-    const stmt = db.prepare('INSERT INTO snippets (content, timestamp, language, summary) VALUES (?, ?, ?, ?)'); // MODIFIED: Included summary
-    const info = stmt.run(content, Date.now(), language, summary); 
-    console.log(`Saved snippet with ID: ${info.lastInsertRowid}, Language: ${language || 'N/A'}, Summary: ${summary ? 'Present' : 'N/A'}`); // More descriptive log
-    return info.lastInsertRowid as number;
-}
-
-export async function getAllSnippets(): Promise<Snippet[]> {
-    const stmt = db.prepare('SELECT id, content, timestamp, language, tags, summary FROM snippets ORDER BY timestamp DESC');
+export function getAllSnippets(): Snippet[] {
+    // Need to fetch tags from snippet_tags table
+    const stmt = getDB().prepare(`
+        SELECT c.id, c.content, c.captured_at, c.updated_at, c.language, c.summary,
+               (SELECT GROUP_CONCAT(tag, ',') FROM snippet_tags WHERE snippet_id = c.id) as tags
+        FROM clips c 
+        ORDER BY c.captured_at DESC
+    `);
     const snippets = stmt.all() as Snippet[];
     console.log('Retrieved snippets:', snippets.length);
     return snippets;
 }
 
-export async function deleteSnippet(id: number): Promise<void> {
-    const stmt = db.prepare('DELETE FROM snippets WHERE id = ?');
+export function deleteSnippet(id: number): void {
+    const stmt = getDB().prepare('DELETE FROM clips WHERE id = ?');
     const info = stmt.run(id);
     if (info.changes && info.changes > 0) {
         console.log(`Deleted snippet with ID: ${id}`);
@@ -85,9 +40,9 @@ export async function deleteSnippet(id: number): Promise<void> {
     }
 }
 
-export async function updateSnippet(id: number, newContent: string): Promise<void> {
-    const stmt = db.prepare('UPDATE snippets SET content = ?, timestamp = ? WHERE id = ?');
-    const info = stmt.run(newContent, Date.now(), id);
+export function updateSnippet(id: number, newContent: string): void {
+    const stmt = getDB().prepare('UPDATE clips SET content = ?, updated_at = unixepoch() WHERE id = ?');
+    const info = stmt.run(newContent, id);
     if (info.changes && info.changes > 0) {
         console.log(`Updated snippet with ID: ${id}`);
     } else {
@@ -95,39 +50,27 @@ export async function updateSnippet(id: number, newContent: string): Promise<voi
     }
 }
 
-export async function updateSnippetTags(id: number, newTags: string): Promise<void> {
-    const stmt = db.prepare('UPDATE snippets SET tags = ?, timestamp = ? WHERE id = ?');
-    const info = stmt.run(newTags, Date.now(), id);
-    if (info.changes && info.changes > 0) {
-        console.log(`Updated tags for snippet with ID: ${id} to: "${newTags}"`);
-    } else {
-        console.warn(`No snippet found with ID: ${id} to update tags.`);
-    }
+export function updateSnippetTags(id: number, newTags: string): void {
+    const db = getDB();
+    const transaction = db.transaction(() => {
+        db.prepare('DELETE FROM snippet_tags WHERE snippet_id = ?').run(id);
+        const insertStmt = db.prepare('INSERT OR IGNORE INTO snippet_tags (snippet_id, tag) VALUES (?, ?)');
+        const tagsList = newTags.split(',').map(t => t.trim()).filter(Boolean);
+        for (const tag of tagsList) {
+            insertStmt.run(id, tag);
+        }
+        db.prepare('UPDATE clips SET updated_at = unixepoch() WHERE id = ?').run(id);
+    });
+    transaction();
+    console.log(`Updated tags for snippet with ID: ${id} to: "${newTags}"`);
 }
 
-export async function updateSnippetLanguage(id: number, newLanguage: string | null): Promise<void> {
-    const stmt = db.prepare('UPDATE snippets SET language = ?, timestamp = ? WHERE id = ?');
-    const info = stmt.run(newLanguage, Date.now(), id);
+export function updateSnippetLanguage(id: number, newLanguage: string | null): void {
+    const stmt = getDB().prepare('UPDATE clips SET language = ?, updated_at = unixepoch() WHERE id = ?');
+    const info = stmt.run(newLanguage, id);
     if (info.changes && info.changes > 0) {
         console.log(`Updated language for snippet with ID: ${id} to: "${newLanguage || 'N/A'}"`);
     } else {
         console.warn(`No snippet found with ID: ${id} to update language.`);
     }
 }
-
-export async function updateSnippetSummary(id: number, newSummary: string | null): Promise<void> {
-    const stmt = db.prepare('UPDATE snippets SET summary = ?, timestamp = ? WHERE id = ?'); 
-    const info = stmt.run(newSummary, Date.now(), id);
-    if (info.changes && info.changes > 0) {
-        console.log(`Snippet with ID ${id} summary updated in DB.`);
-    } else {
-        console.warn(`No snippet found with ID: ${id} to update summary.`);
-    }
-}
-
-app.on('before-quit', () => {
-    if (db.open) {
-        db.close();
-        console.log('Database closed.');
-    }
-});
